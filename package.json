@@ -1,0 +1,13 @@
+{
+  "name": "rain-on-glass",
+  "version": "1.0.0",
+  "description": "An interactive rainy window at night. Wipe the fogged glass and watch it steam back up.",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,758 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rain on Glass</title>
+<!--
+  Rain on Glass (Opus 5.5 demo)
+
+  Physics notes this is built on:
+  - Rain is OUTSIDE the pane. Each bead is a tiny plano-convex lens, so it shows a
+    miniature, upside-down (inverted) image of the street behind it, a dark rim where
+    light is bent away from the eye, a bright crescent at the bottom where light is
+    focused, and a small specular highlight from the brightest light source.
+  - Beads stay pinned (contact-angle hysteresis) until they grow past a critical size,
+    then slide in jerky stop/start runs, eat the smaller beads in their path, and leave
+    a trail of tiny beads behind them. The path they clear stays bare for a while.
+  - Condensation (the "fog") is on the INSIDE: millions of micro droplets that scatter
+    light, so the view goes milky, low contrast and blurred. It is thicker near the
+    cold bottom of the pane. Wiping it leaves streaks from the finger, water pushed
+    to the edge of the stroke drips down and cuts clear channels, and the fog
+    re-nucleates in patches rather than as a uniform fade.
+-->
+<style>
+  :root { --ink: #e8e3da; --frame: #16120e; }
+  html, body { margin: 0; height: 100%; background: #040507; overflow: hidden; }
+  body { cursor: none; touch-action: none; user-select: none; -webkit-user-select: none; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+  #gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+  /* Window frame: painted wood, bevel, rubber seal, deeper sill at the bottom */
+  .frame { position: fixed; inset: 0; pointer-events: none;
+    border-style: solid; border-color: var(--frame);
+    border-width: clamp(14px, 2vw, 28px) clamp(14px, 2vw, 28px) clamp(26px, 3.6vw, 52px);
+    box-shadow:
+      inset 0 0 0 1px rgba(255, 232, 200, .07),
+      inset 0 0 0 5px #0a0806,
+      inset 0 0 0 6px rgba(255, 255, 255, .035),
+      inset 0 10px 30px 6px rgba(0, 0, 0, .55),
+      inset 0 -6px 40px 10px rgba(0, 0, 0, .5);
+  }
+  .frame::before { content: ""; position: fixed; inset: 0; pointer-events: none;
+    background:
+      linear-gradient(90deg, rgba(255,220,180,.05), transparent 1.2%, transparent 98.8%, rgba(255,220,180,.04)),
+      linear-gradient(180deg, rgba(255,220,180,.05), transparent 1.2%);
+    -webkit-mask: none; }
+  .sill { position: fixed; left: 0; right: 0; bottom: 0; height: clamp(26px, 3.6vw, 52px); pointer-events: none;
+    background: linear-gradient(180deg, #2a2119 0%, #1b1510 30%, #120e0a 100%);
+    box-shadow: 0 -1px 0 rgba(255, 225, 190, .12), 0 -8px 18px rgba(0, 0, 0, .5); }
+
+  /* Custom cursor: a cartoon gloved hand. Points while hovering, opens into a palm to wipe. */
+  #cursor { position: fixed; left: 0; top: 0; width: 0; height: 0; pointer-events: none; z-index: 10; will-change: transform; transition: opacity .3s; }
+  #cursor svg { position: absolute; overflow: visible; filter: drop-shadow(0 4px 5px rgba(0,0,0,.45));
+    transition: opacity .12s, transform .22s cubic-bezier(.3,1.6,.5,1); }
+  #cursor .point { width: 46px; left: -17px; top: -3px; transform-origin: 17px 3px; }
+  #cursor .palm { width: 84px; left: -41px; top: -58px; transform-origin: 41px 58px; opacity: 0; transform: scale(.6) rotate(-10deg); }
+  body.down #cursor .point { opacity: 0; transform: scale(.7); }
+  body.down #cursor .palm { opacity: 1; transform: scale(1) rotate(var(--tilt, 0deg)); }
+  body.away #cursor { opacity: 0; }
+
+  .hud { position: fixed; pointer-events: none; color: var(--ink); letter-spacing: .02em; transition: opacity 1.2s; text-shadow: 0 1px 8px rgba(0,0,0,.8); }
+  .tag { top: clamp(24px, 3vw, 40px); left: clamp(26px, 3.2vw, 44px); font-size: 12px; opacity: .55; }
+  .tag b { font-weight: 600; }
+
+  /* Top-right links: open-source repo + creator's X */
+  .links { position: fixed; z-index: 20; top: clamp(20px, 2.6vw, 34px); right: clamp(24px, 3vw, 42px); display: flex; gap: 8px; transition: opacity 1.2s; }
+  .links a { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: 999px;
+    color: var(--ink); text-decoration: none; font-size: 12.5px; font-weight: 500; letter-spacing: .01em; cursor: none;
+    background: rgba(12, 12, 16, .52); border: 1px solid rgba(255, 255, 255, .12);
+    backdrop-filter: blur(10px) saturate(1.2); -webkit-backdrop-filter: blur(10px) saturate(1.2);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .35); transition: background .2s, border-color .2s, transform .2s; }
+  .links a:hover { background: rgba(28, 28, 36, .72); border-color: rgba(255, 255, 255, .28); transform: translateY(-1px); }
+  .links a:focus-visible { outline: 2px solid #9fd3ff; outline-offset: 2px; }
+  .links svg { width: 15px; height: 15px; fill: currentColor; flex: none; }
+  .links a.x svg { width: 13px; height: 13px; }
+  body.clean .links { opacity: 0; pointer-events: none; }
+  @media (max-width: 520px) { .links a span { display: none; } .links a { padding: 0 10px; } }
+  .hint { bottom: clamp(44px, 6vw, 80px); left: 0; right: 0; text-align: center; font-size: 15px; opacity: .8; }
+  .keys { bottom: clamp(34px, 4.6vw, 64px); right: clamp(26px, 3.2vw, 44px); font-size: 11px; opacity: .4; }
+  body.clean .hud { opacity: 0 !important; }
+  .fail { position: fixed; inset: 0; display: grid; place-items: center; color: var(--ink); font-size: 15px; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div class="frame"></div>
+<div class="sill"></div>
+<div id="cursor">
+  <svg class="point" viewBox="0 0 64 74" aria-hidden="true">
+    <g stroke="#1c1a22" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round" fill="#fbfaf6">
+      <rect x="3" y="33" width="15" height="24" rx="7.5" transform="rotate(-32 10 45)"/>
+      <rect x="12" y="27" width="41" height="35" rx="14"/>
+      <rect x="29" y="23" width="12" height="17" rx="6"/>
+      <rect x="40" y="27" width="12" height="16" rx="6"/>
+      <rect x="17" y="2" width="14" height="36" rx="7"/>
+      <rect x="15" y="58" width="34" height="13" rx="4.5" fill="#e4e1d8"/>
+    </g>
+    <g fill="none" stroke="#1c1a22" stroke-width="2.2" stroke-linecap="round" opacity=".55">
+      <path d="M21 18h6M30 48c4 3 10 3 14 0"/>
+      <path d="M20 64h24" opacity=".6"/>
+    </g>
+    <path d="M20 6c0 8 0 18 1 26" stroke="#fff" stroke-width="2.4" stroke-linecap="round" fill="none" opacity=".9"/>
+    <path d="M47 33c3 6 3 16-1 24" stroke="#d9d5ca" stroke-width="4" stroke-linecap="round" fill="none"/>
+  </svg>
+  <svg class="palm" viewBox="0 0 72 84" aria-hidden="true">
+    <g stroke="#1c1a22" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" fill="#fbfaf6">
+      <rect x="1" y="36" width="15" height="27" rx="7.5" transform="rotate(-38 8 50)"/>
+      <rect x="13" y="12" width="11" height="34" rx="5.5" transform="rotate(-8 18 30)"/>
+      <rect x="25" y="4" width="11" height="40" rx="5.5"/>
+      <rect x="37" y="5" width="11" height="39" rx="5.5" transform="rotate(4 42 25)"/>
+      <rect x="48" y="14" width="10" height="32" rx="5" transform="rotate(12 53 30)"/>
+      <rect x="12" y="32" width="46" height="36" rx="16"/>
+      <rect x="18" y="66" width="34" height="14" rx="4.5" fill="#e4e1d8"/>
+    </g>
+    <g fill="none" stroke="#1c1a22" stroke-width="2" stroke-linecap="round" opacity=".45">
+      <path d="M26 50c5 4 14 4 19 0"/><path d="M24 72h22"/>
+    </g>
+    <path d="M52 38c3 7 2 16-3 22" stroke="#d9d5ca" stroke-width="4" stroke-linecap="round" fill="none"/>
+    <g fill="#bfe3ff" opacity=".85"><circle cx="30" cy="10" r="1.6"/><circle cx="42" cy="12" r="1.3"/><circle cx="20" cy="42" r="1.4"/></g>
+  </svg>
+</div>
+<div class="hud tag"><b>Rain on Glass</b> · Opus 5.5</div>
+<nav class="links" aria-label="Project links">
+  <a class="gh" href="https://github.com/Hixly/rain-on-glass" target="_blank" rel="noopener" aria-label="Source code on GitHub">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>
+    <span>Open source</span>
+  </a>
+  <a class="x" href="https://x.com/hixonstudio" target="_blank" rel="noopener" aria-label="@hixonstudio on X">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+    <span>@hixonstudio</span>
+  </a>
+</nav>
+<div class="hud hint" id="hint">Press and drag to wipe the glass</div>
+<div class="hud keys">M sound · R re-fog · H hide text</div>
+
+<script>
+(() => {
+'use strict';
+
+const cv = document.getElementById('gl');
+const gl = cv.getContext('webgl2', { antialias: false, alpha: false, premultipliedAlpha: false, preserveDrawingBuffer: false });
+if (!gl) { document.body.insertAdjacentHTML('beforeend', '<div class="fail">This demo needs WebGL2.</div>'); return; }
+
+// ---------- utilities ----------
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const R = Math.random;
+
+// ---------- sizes ----------
+let VW, VH, DPR, WS, ww, wh, CELL = 3, gw, gh;
+
+// ---------- the street outside (painted once, then blurred into focus layers) ----------
+function paintScene(x, w, h, p) {
+  const s = h / 1000, rnd = mulberry32(20260922);
+  const horizon = h * .665, street = h * .755;
+
+  let g = x.createLinearGradient(0, -p, 0, h + p);
+  g.addColorStop(0, '#04060c'); g.addColorStop(.3, '#0b1020'); g.addColorStop(.52, '#1d1c2c');
+  g.addColorStop(.63, '#43302f'); g.addColorStop(.69, '#1a1213'); g.addColorStop(1, '#060608');
+  x.fillStyle = g; x.fillRect(-p, -p, w + 2 * p, h + 2 * p);
+
+  // low cloud deck lit orange from below by the city
+  for (let i = 0; i < 26; i++) {
+    const cx = rnd() * (w + 2 * p) - p, cy = h * (.2 + rnd() * .38), r = (140 + rnd() * 320) * s;
+    const cg = x.createRadialGradient(cx, cy, 0, cx, cy, r);
+    const warm = cy / h;
+    cg.addColorStop(0, `rgba(${90 + warm * 90 | 0},${60 + warm * 30 | 0},${70},${.05 + warm * .07})`);
+    cg.addColorStop(1, 'rgba(0,0,0,0)');
+    x.fillStyle = cg; x.fillRect(cx - r, cy - r, r * 2, r * 2);
+  }
+  g = x.createRadialGradient(w * .5, horizon, 0, w * .5, horizon, w * .75);
+  g.addColorStop(0, 'rgba(255,140,70,.22)'); g.addColorStop(.5, 'rgba(160,80,70,.08)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+  x.fillStyle = g; x.fillRect(-p, -p, w + 2 * p, h + 2 * p);
+
+  const winColors = ['#ffcf86', '#ffdca8', '#ffe9c4', '#ffc070', '#cfe6ff', '#9dbbff', '#fff1d8'];
+  function skyline(top, minW, maxW, minH, maxH, body, winP, winS, winGap, alpha) {
+    for (let bx = -p; bx < w + p;) {
+      const bw = (minW + rnd() * (maxW - minW)) * s, bh = (minH + rnd() * (maxH - minH)) * s;
+      const y0 = top - bh;
+      x.fillStyle = body; x.fillRect(bx, y0, bw + 1, h + p - y0);
+      if (rnd() < .25) { x.fillRect(bx + bw * .4, y0 - 30 * s, 3 * s, 30 * s); } // antenna
+      const cols = Math.floor((bw - winGap * s) / (winS * s + winGap * s)), rows = Math.floor((bh - 10 * s) / (winS * 1.35 * s + winGap * s));
+      const bias = rnd();
+      for (let r = 0; r < rows; r++) {
+        const rowOn = rnd() < .85;
+        for (let c = 0; c < cols; c++) {
+          if (!rowOn || rnd() > winP * (.6 + bias * .8)) continue;
+          const wx = bx + winGap * s + c * (winS * s + winGap * s), wy = y0 + 8 * s + r * (winS * 1.35 * s + winGap * s);
+          x.globalAlpha = alpha * (.45 + rnd() * .55);
+          x.fillStyle = winColors[(rnd() * winColors.length) | 0];
+          x.fillRect(wx, wy, winS * s, winS * 1.35 * s);
+        }
+      }
+      x.globalAlpha = 1;
+      bx += bw + (rnd() < .2 ? rnd() * 30 * s : 0);
+    }
+  }
+  skyline(horizon, 26, 70, 60, 230, '#0c0e17', .22, 3, 4, .55);          // far towers
+  skyline(horizon + 20 * s, 70, 190, 120, 470, '#07080d', .34, 7, 7, .95); // mid blocks
+
+  // neon signs
+  function neon(cx, cy, wN, hN, col) {
+    x.save(); x.shadowColor = col; x.shadowBlur = 24 * s; x.strokeStyle = col; x.lineWidth = 4 * s;
+    x.strokeRect(cx, cy, wN * s, hN * s); x.shadowBlur = 50 * s; x.strokeRect(cx, cy, wN * s, hN * s);
+    x.fillStyle = col; x.globalAlpha = .9;
+    for (let i = 0; i < 5; i++) x.fillRect(cx + (10 + i * (wN - 20) / 5) * s, cy + hN * .35 * s, (wN - 30) / 7 * s, hN * .3 * s);
+    x.restore();
+  }
+  const signs = [[w * .18, h * .5, 120, 34, '255,61,154'], [w * .7, h * .455, 90, 30, '55,224,255'], [w * .9, h * .56, 60, 70, '255,154,60']];
+  // signs light the wall they hang on
+  x.globalCompositeOperation = 'lighter';
+  for (const [sx, sy, sw, shh, rgb] of signs) {
+    const cx = sx + sw * s / 2, cy = sy + shh * s / 2, r = sw * s * 1.3;
+    const sg = x.createRadialGradient(cx, cy, 0, cx, cy, r);
+    sg.addColorStop(0, `rgba(${rgb},.22)`); sg.addColorStop(1, `rgba(${rgb},0)`);
+    x.fillStyle = sg; x.fillRect(cx - r, cy - r, r * 2, r * 2);
+  }
+  x.globalCompositeOperation = 'source-over';
+  for (const [sx, sy, sw, shh, rgb] of signs) neon(sx, sy, sw, shh, `rgb(${rgb})`);
+
+  // street + wet asphalt
+  g = x.createLinearGradient(0, street - 20 * s, 0, h + p);
+  g.addColorStop(0, '#0d0b0d'); g.addColorStop(.3, '#0a090b'); g.addColorStop(1, '#050506');
+  x.fillStyle = g; x.fillRect(-p, street - 20 * s, w + 2 * p, h + p - street + 20 * s);
+  x.fillStyle = 'rgba(255,200,140,.05)'; x.fillRect(-p, street - 20 * s, w + 2 * p, 2 * s); // curb
+
+  // street lamps with wet road reflections
+  for (let i = -1; i < 6; i++) {
+    const lx = w * (.08 + i * .21) + rnd() * 30 * s, top = h * .48, base = h * .79;
+    const hx = lx + 28 * s, hy = top + 6 * s;
+    // light spill: cone down through the rain, pool on the pavement, wash on the facade behind
+    x.globalCompositeOperation = 'lighter';
+    let fg = x.createRadialGradient(hx, hy, 0, hx, hy, 160 * s);
+    fg.addColorStop(0, 'rgba(255,170,90,.16)'); fg.addColorStop(1, 'rgba(255,150,70,0)');
+    x.fillStyle = fg; x.fillRect(hx - 160 * s, hy - 160 * s, 320 * s, 320 * s);
+    x.save(); x.beginPath(); x.moveTo(hx - 6 * s, hy); x.lineTo(hx + 6 * s, hy); x.lineTo(hx + 70 * s, base); x.lineTo(hx - 70 * s, base); x.closePath();
+    const cg2 = x.createLinearGradient(0, hy, 0, base); cg2.addColorStop(0, 'rgba(255,190,110,.13)'); cg2.addColorStop(1, 'rgba(255,170,90,.03)');
+    x.fillStyle = cg2; x.fill(); x.restore();
+    x.save(); x.translate(hx, base + 4 * s); x.scale(1, .16);
+    const pg = x.createRadialGradient(0, 0, 0, 0, 0, 110 * s); pg.addColorStop(0, 'rgba(255,175,95,.5)'); pg.addColorStop(.5, 'rgba(255,150,70,.16)'); pg.addColorStop(1, 'rgba(255,140,60,0)');
+    x.fillStyle = pg; x.fillRect(-110 * s, -110 * s, 220 * s, 220 * s); x.restore();
+    x.globalCompositeOperation = 'source-over';
+    // pole and arm, with a warm edge where the lamp catches them
+    x.fillStyle = '#060607'; x.fillRect(lx - 2 * s, top, 4 * s, base - top); x.fillRect(lx, top, 28 * s, 4 * s);
+    const eg = x.createLinearGradient(0, top, 0, base); eg.addColorStop(0, 'rgba(255,180,100,.55)'); eg.addColorStop(1, 'rgba(255,180,100,.05)');
+    x.fillStyle = eg; x.fillRect(lx + 1 * s, top, 1.2 * s, base - top); x.fillRect(lx, top + 3 * s, 28 * s, 1 * s);
+    x.fillStyle = '#0d0c0c'; x.fillRect(hx - 9 * s, top - 1 * s, 18 * s, 6 * s); // lamp housing
+    let lg = x.createRadialGradient(hx, hy, 0, hx, hy, 70 * s);
+    lg.addColorStop(0, 'rgba(255,214,150,1)'); lg.addColorStop(.08, 'rgba(255,180,90,.9)'); lg.addColorStop(.35, 'rgba(255,140,60,.18)'); lg.addColorStop(1, 'rgba(0,0,0,0)');
+    x.fillStyle = lg; x.fillRect(hx - 70 * s, hy - 70 * s, 140 * s, 140 * s);
+    const rg = x.createLinearGradient(0, base - 30 * s, 0, h + p);
+    rg.addColorStop(0, 'rgba(255,170,80,.0)'); rg.addColorStop(.15, 'rgba(255,170,80,.32)'); rg.addColorStop(1, 'rgba(255,150,60,0)');
+    x.fillStyle = rg;
+    for (let k = 0; k < 6; k++) x.fillRect(hx - (5 - k) * s + (rnd() - .5) * 6 * s, base - 30 * s, (10 - k * 1.4) * s, h + p - base);
+  }
+  // traffic light
+  x.fillStyle = '#050506'; x.fillRect(w * .58, h * .6, 3 * s, h * .2);
+  x.fillRect(w * .58 - 8 * s, h * .6, 18 * s, 44 * s);
+  const tl = x.createRadialGradient(w * .58 + 1 * s, h * .6 + 34 * s, 0, w * .58 + 1 * s, h * .6 + 34 * s, 26 * s);
+  tl.addColorStop(0, 'rgba(120,255,170,1)'); tl.addColorStop(.25, 'rgba(60,220,140,.5)'); tl.addColorStop(1, 'rgba(0,0,0,0)');
+  x.fillStyle = tl; x.fillRect(w * .58 - 30 * s, h * .6, 60 * s, 70 * s);
+  x.fillStyle = 'rgba(60,220,140,.22)'; x.fillRect(w * .58 - 3 * s, h * .8, 8 * s, h * .2 + p);
+
+  // neon colours smeared down the wet street
+  x.globalCompositeOperation = 'lighter';
+  for (const [sx, , sw, , rgb] of signs) {
+    const rg = x.createLinearGradient(0, street, 0, h);
+    rg.addColorStop(0, `rgba(${rgb},.16)`); rg.addColorStop(1, `rgba(${rgb},0)`);
+    x.fillStyle = rg;
+    for (let k = 0; k < 4; k++) x.fillRect(sx + (sw * s) * (.15 + k * .22) + (rnd() - .5) * 4 * s, street, 5 * s, h - street + p);
+  }
+  x.globalCompositeOperation = 'source-over';
+  // general reflected city glow on the wet street
+  g = x.createLinearGradient(0, street, 0, h);
+  g.addColorStop(0, 'rgba(255,150,90,.10)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+  x.fillStyle = g; x.fillRect(-p, street, w + 2 * p, h - street + p);
+}
+
+function makeLayers(w, h) {
+  const p = Math.round(h * .08);
+  const big = document.createElement('canvas'); big.width = w + 2 * p; big.height = h + 2 * p;
+  const bx = big.getContext('2d'); bx.translate(p, p); paintScene(bx, w, h, p);
+  const out = (blur) => {
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const x = c.getContext('2d'); if (blur) x.filter = `blur(${blur}px)`;
+    x.drawImage(big, -p, -p); return c;
+  };
+  const k = h / 1000;
+  return { sharp: out(1.1 * k), mid: out(5 * k), heavy: out(34 * k) };
+}
+
+// ---------- drop sprite: RG = surface normal, B = height, A = coverage ----------
+function makeSprite(S) {
+  const c = document.createElement('canvas'); c.width = c.height = S;
+  const x = c.getContext('2d'), img = x.createImageData(S, S), d = img.data;
+  for (let j = 0; j < S; j++) for (let i = 0; i < S; i++) {
+    const dx = (i + .5) / S * 2 - 1, dy0 = (j + .5) / S * 2 - 1;
+    const dy = dy0 < 0 ? dy0 * 1.06 : dy0 * .96; // gravity: slightly heavier bottom
+    const r = Math.hypot(dx, dy), k = (j * S + i) * 4;
+    if (r >= 1) continue;
+    const hgt = Math.sqrt(1 - r * r);
+    d[k] = (dx * .5 + .5) * 255; d[k + 1] = (dy * .5 + .5) * 255; d[k + 2] = hgt * 255;
+    d[k + 3] = clamp((1 - r) / .14, 0, 1) * 255;
+  }
+  x.putImageData(img, 0, 0); return c;
+}
+const sprite = makeSprite(96);
+
+// ---------- water simulation (outside rain + inside drips) ----------
+let water, wctx, mist, mctx, drops = [], drips = [], clearF, clearU8;
+function setupSim() {
+  water = document.createElement('canvas'); water.width = ww; water.height = wh; wctx = water.getContext('2d');
+  mist = document.createElement('canvas'); mist.width = ww; mist.height = wh; mctx = mist.getContext('2d');
+  drops = []; drips = [];
+  gw = Math.ceil(VW / CELL); gh = Math.ceil(VH / CELL);
+  clearF = new Float32Array(gw * gh); clearU8 = new Uint8Array(gw * gh);
+  // pre-soak the glass so it looks like it has been raining for a while
+  for (let i = 0; i < 2600; i++) spawnMist(); for (let i = 0; i < 420; i++) spawnDrop(true);
+}
+function spawnMist() {
+  const r = (Math.pow(R(), 2.2) * 1.9 + .55) * WS, x = R() * ww, y = R() * wh;
+  mctx.drawImage(sprite, x - r, y - r, r * 2, r * 2);
+}
+function spawnDrop(quiet) {
+  const r = (1.7 + Math.pow(R(), 3.2) * 7.5) * WS, x = R() * ww, y = R() * wh * 1.02 - wh * .02;
+  // an impact onto an existing bead merges into it
+  for (const d of drops) {
+    const dx = d.x - x, dy = d.y - y;
+    if (dx * dx + dy * dy < (d.r + r * .6) ** 2) { d.r = Math.min(Math.hypot(d.r, r), 11 * WS); if (!quiet) tap(.012 + r / WS * .004); return; }
+  }
+  drops.push({ x, y, r, vy: 0, vx: 0, slide: false, trail: 0, pin: 0, seed: R() });
+  if (!quiet && r > 4 * WS) tap(.008 + r / WS * .003);
+}
+const SLIDE_R = 5.4, STOP_R = 3.1;
+
+function simulate(dt, intensity) {
+  // new rain
+  let n = intensity * 22 * dt * (ww * wh) / (1600 * 900);
+  while (n > 0) { if (R() < n) spawnDrop(false); n -= 1; }
+  let m = intensity * 260 * dt * (ww * wh) / (1600 * 900);
+  while (m > 0) { if (R() < m) spawnMist(); m -= 1; }
+
+  const G = 520 * WS;
+  for (let i = drops.length - 1; i >= 0; i--) {
+    const d = drops[i];
+    if (!d.slide) {
+      if (d.r > SLIDE_R * WS && R() < dt * (d.r / WS - SLIDE_R + .4) * .9) { d.slide = true; d.vy = 8 * WS; }
+      continue;
+    }
+    // pinning: the contact line catches and releases, giving stop/start motion
+    if (d.pin > 0) { d.pin -= dt; } else {
+      d.vy += G * (d.r / WS - 3.8) / 5 * dt;
+      d.vy *= 1 - 1.8 * dt;
+      d.vy = Math.min(d.vy, 620 * WS);
+      if (R() < dt * (2.4 - d.r / WS * .18)) { d.pin = R() * .35; d.vy *= .2; }
+    }
+    if (R() < dt * 3) d.vx = (R() - .5) * d.vy * .22;
+    const oy = d.y;
+    d.y += d.vy * dt; d.x += d.vx * dt;
+    // clear the mist it runs through
+    mctx.globalCompositeOperation = 'destination-out';
+    mctx.beginPath(); mctx.ellipse(d.x, (d.y + oy) / 2 - d.r * .2, d.r * .92, d.r * .92 + (d.y - oy) / 2, 0, 0, 7); mctx.fill();
+    mctx.globalCompositeOperation = 'source-over';
+    // leave a trail of tiny beads, losing mass
+    d.trail += d.y - oy;
+    if (d.trail > d.r * (1.1 + R() * 1.6)) {
+      d.trail = 0;
+      const tr = d.r * (.14 + R() * .2);
+      drops.push({ x: d.x + (R() - .5) * d.r * .5, y: d.y - d.r * (1 + R() * .4), r: tr, vy: 0, vx: 0, slide: false, trail: 0, pin: 0, seed: R() });
+      d.r = Math.sqrt(Math.max(0, d.r * d.r - tr * tr * 1.4));
+    }
+    // swallow beads in its path
+    for (let j = drops.length - 1; j >= 0; j--) {
+      const o = drops[j]; if (o === d) continue;
+      const dx = o.x - d.x, dy = o.y - d.y, rr = (d.r + o.r) * .82;
+      if (dy > -d.r * 2 && dx * dx + dy * dy < rr * rr) {
+        if (o.r > d.r && o.slide) continue;
+        d.r = Math.min(Math.hypot(d.r, o.r), 12 * WS); d.vy += o.r / WS * 10 * WS;
+        drops.splice(j, 1); if (j < i) i--;
+      }
+    }
+    if (d.r < STOP_R * WS) { d.slide = false; d.vy = 0; }
+    if (d.y - d.r * 3 > wh) drops.splice(i, 1);
+  }
+  // keep the bead count bounded: evaporate the oldest small static ones
+  const MAX = 1100 * (ww * wh) / (1600 * 900);
+  if (drops.length > MAX) { let cut = drops.length - MAX; for (let i = 0; i < drops.length && cut > 0; i++) if (!drops[i].slide) { drops.splice(i, 1); i--; cut--; } }
+
+  // slow evaporation of the mist layer so it never saturates
+  mistFade += dt;
+  if (mistFade > 1.4) { mistFade = 0; mctx.globalCompositeOperation = 'destination-out'; mctx.fillStyle = 'rgba(0,0,0,.035)'; mctx.fillRect(0, 0, ww, wh); mctx.globalCompositeOperation = 'source-over'; }
+
+  // inside drips from wiped condensation: run down and cut channels through the fog
+  for (let i = drips.length - 1; i >= 0; i--) {
+    const d = drips[i];
+    d.life -= dt;
+    if (d.pin > 0) d.pin -= dt; else { d.vy = Math.min(d.vy + 60 * dt, d.max); if (R() < dt * 1.2) d.pin = R() * .6; }
+    const py0 = d.y;
+    d.y += d.vy * dt * WS; d.x += Math.sin(d.y * .05 + d.seed * 6) * .15 * WS;
+    d.r -= dt * .09 * WS;
+    for (let yy = py0; yy <= d.y; yy += CELL * WS * .5) stampClear(d.x / WS, yy / WS, d.r / WS * .8, 1.35, 0, 1, false);
+    stampClear(d.x / WS, d.y / WS, d.r / WS * .8, 1.35, 0, 1, false);
+    if (d.r < .8 * WS || d.life < 0 || d.y > wh + 10) drips.splice(i, 1);
+  }
+}
+let mistFade = 0;
+
+function renderWater() {
+  wctx.clearRect(0, 0, ww, wh);
+  wctx.drawImage(mist, 0, 0);
+  for (const d of drops) {
+    let sx = 1, sy = 1;
+    if (d.slide) { const k = Math.min(d.vy / (380 * WS), 1); sx = 1 - k * .14; sy = 1 + k * .55; }
+    wctx.drawImage(sprite, d.x - d.r * sx, d.y - d.r * (2 * sy - 1), d.r * sx * 2, d.r * sy * 2);
+  }
+  for (const d of drips) wctx.drawImage(sprite, d.x - d.r * .9, d.y - d.r * 1.3, d.r * 1.8, d.r * 2.3);
+}
+
+// ---------- condensation (clear-map) ----------
+const BRUSH = 36, HOLD = 1.9, DECAY = .15;
+let stripe = 0;
+function stampClear(px, py, rad, val, dx, dy, streaks) {
+  const gx = px / CELL, gy = py / CELL, gr = rad / CELL;
+  const x0 = Math.max(0, Math.floor(gx - gr)), x1 = Math.min(gw - 1, Math.ceil(gx + gr));
+  const y0 = Math.max(0, Math.floor(gy - gr)), y1 = Math.min(gh - 1, Math.ceil(gy + gr));
+  for (let j = y0; j <= y1; j++) for (let i = x0; i <= x1; i++) {
+    const ox = i + .5 - gx, oy = j + .5 - gy, dd = Math.hypot(ox, oy) / gr;
+    if (dd >= 1) continue;
+    let s = 1 - smooth(.3, 1, dd);
+    if (streaks) { const perp = (ox * -dy + oy * dx) * CELL; s *= .97 + .03 * Math.sin(perp * .6 + stripe); }
+    const k = j * gw + i; if (clearF[k] < s * val) clearF[k] = s * val;
+  }
+}
+function decayClear(dt) {
+  const f = clearF, u = clearU8;
+  for (let k = 0; k < f.length; k++) {
+    let v = f[k]; if (v > 0) { v -= dt * DECAY; f[k] = v > 0 ? v : 0; }
+    u[k] = v >= 1.2 ? 255 : v <= 0 ? 0 : (v / 1.2 * 255) | 0;
+  }
+}
+
+// ---------- pointer / wiping ----------
+const cursor = document.getElementById('cursor'), hint = document.getElementById('hint');
+let mx = -100, my = -100, down = false, lx = 0, ly = 0, wipedOnce = false, wipeSpeed = 0;
+addEventListener('pointermove', e => {
+  mx = e.clientX; my = e.clientY; document.body.classList.remove('away');
+  if (!down) return;
+  const dx = mx - lx, dy = my - ly, len = Math.hypot(dx, dy);
+  if (len < .5) return;
+  const ux = dx / len, uy = dy / len, step = BRUSH * .22;
+  for (let t = step; t <= len; t += step) wipeAt(lx + ux * t, ly + uy * t, ux, uy);
+  wipeSpeed = Math.min(1, wipeSpeed + len / 180);
+  lx = mx; ly = my;
+});
+addEventListener('pointerdown', e => {
+  if (e.target.closest('.links')) return;   // clicking a link should not start a wipe
+  initAudio(); down = true; document.body.classList.add('down');
+  mx = lx = e.clientX; my = ly = e.clientY; stripe = R() * 6.28;
+  wipeAt(mx, my, 1, 0);
+  if (!wipedOnce) { wipedOnce = true; setTimeout(() => hint.style.opacity = 0, 600); }
+});
+const up = () => { down = false; document.body.classList.remove('down'); };
+addEventListener('pointerup', up); addEventListener('pointercancel', up);
+document.addEventListener('pointerleave', () => { up(); document.body.classList.add('away'); });
+function wipeAt(x, y, ux, uy) {
+  stampClear(x, y, BRUSH, HOLD, ux, uy, true);
+  // condensation pushed to the rim of the stroke gathers and sometimes runs
+  if (R() < .018 && drips.length < 40) {
+    const a = R() * Math.PI, ex = x + Math.cos(a) * BRUSH * .85, ey = y + Math.sin(a) * BRUSH * .85;
+    drips.push({ x: ex * WS, y: ey * WS, r: (2.2 + R() * 1.8) * WS, vy: 0, max: 22 + R() * 38, pin: .3 + R(), life: 5 + R() * 6, seed: R() });
+  }
+}
+
+// ---------- keys ----------
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'm') { muted = !muted; if (master) master.gain.setTargetAtTime(muted ? 0 : 1, AC.currentTime, .1); }
+  if (k === 'r') { clearF.fill(0); drips.length = 0; }
+  if (k === 'h') document.body.classList.toggle('clean');
+});
+
+// ---------- sound: rain bed, taps on glass, wiping squeak, thunder ----------
+let AC = null, master, rainG, wipeG, noiseBuf, muted = false, tapBudget = 0;
+function initAudio() {
+  if (AC) { if (AC.state === 'suspended') AC.resume(); return; }
+  try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return; }
+  master = AC.createGain(); master.gain.value = 1; master.connect(AC.destination);
+  const len = AC.sampleRate * 4, buf = AC.createBuffer(1, len, AC.sampleRate), d = buf.getChannelData(0);
+  let b0 = 0, b1 = 0, b2 = 0;
+  for (let i = 0; i < len; i++) { const w = R() * 2 - 1; b0 = .99765 * b0 + w * .099046; b1 = .963 * b1 + w * .2965164; b2 = .57 * b2 + w * 1.0526913; d[i] = (b0 + b1 + b2 + w * .1848) * .11; }
+  noiseBuf = buf;
+  const src = AC.createBufferSource(); src.buffer = buf; src.loop = true;
+  const hp = AC.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 220;
+  const lp = AC.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3200;
+  rainG = AC.createGain(); rainG.gain.value = 0; rainG.gain.setTargetAtTime(.32, AC.currentTime, 1.2);
+  src.connect(hp).connect(lp).connect(rainG).connect(master); src.start();
+  const s2 = AC.createBufferSource(); s2.buffer = buf; s2.loop = true; s2.playbackRate.value = 1.6;
+  const bp = AC.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1700; bp.Q.value = 1.4;
+  wipeG = AC.createGain(); wipeG.gain.value = 0;
+  s2.connect(bp).connect(wipeG).connect(master); s2.start();
+}
+function tap(g) {
+  if (!AC || tapBudget <= 0) return; tapBudget--;
+  const t = AC.currentTime + R() * .03, s = AC.createBufferSource(); s.buffer = noiseBuf;
+  const f = AC.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 2200 + R() * 4200; f.Q.value = 4;
+  const v = AC.createGain(); v.gain.setValueAtTime(g * 3, t); v.gain.exponentialRampToValueAtTime(.0001, t + .045);
+  s.connect(f).connect(v).connect(master); s.start(t, R() * 3, .06);
+}
+function thunder(delay, power, near) {
+  if (!AC) return;
+  const t0 = AC.currentTime + delay;
+  const burst = (t, gain, freq, rate, attack, decay) => {
+    const s = AC.createBufferSource(); s.buffer = noiseBuf; s.playbackRate.value = rate;
+    const f = AC.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = freq;
+    const v = AC.createGain(); v.gain.setValueAtTime(0, t); v.gain.linearRampToValueAtTime(gain, t + attack); v.gain.exponentialRampToValueAtTime(.0001, t + attack + decay);
+    s.connect(f).connect(v).connect(master); s.start(t, R() * 2, attack + decay + .2);
+  };
+  if (near) burst(t0, power * .9, 1400, .9, .01, .5);            // the crack
+  const rolls = near ? 5 : 3;                                        // the rolling rumble
+  for (let k = 0; k < rolls; k++) burst(t0 + k * (.35 + R() * .6), power * (1 - k / (rolls + 1)) * 1.4, 110 + R() * 120, .3 + R() * .15, .3 + R() * .4, 2 + R() * 2.5);
+}
+
+// ---------- WebGL ----------
+const VS = `#version 300 es
+in vec2 p; out vec2 vUv;
+void main(){ vUv = vec2(p.x*.5+.5, .5-p.y*.5); gl_Position = vec4(p,0,1); }`;
+
+const FS = `#version 300 es
+precision highp float;
+in vec2 vUv; out vec4 o;
+uniform sampler2D uSharp, uMid, uHeavy, uWater, uClear;
+uniform vec2 uRes; uniform float uTime, uFlash, uAspect, uRain;
+
+float hash(vec2 p){ p = fract(p*vec2(123.34,456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
+float noise(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);
+  return mix(mix(hash(i),hash(i+vec2(1,0)),f.x), mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x), f.y); }
+float fbm(vec2 p){ float v=0., a=.5; for(int i=0;i<5;i++){ v+=a*noise(p); p=p*2.03+17.1; a*=.5; } return v; }
+
+float sdBox(vec2 p, vec2 b, float r){ vec2 q = abs(p) - b + r; return length(max(q,0.)) + min(max(q.x,q.y),0.) - r; }
+// street-lamp light falling on things at street level (lamps repeat every .21 of the width)
+float lampAt(float x){ return pow(.5 + .5*cos((x - .095)*6.2832/.21), 8.); }
+float glow(vec2 d, float r){ return exp(-dot(d,d)/(r*r)); }
+
+// cars seen side-on from the window: body + cabin + wheels, lit by the street lamps,
+// white headlight in front with a beam on the wet road, red tail light behind,
+// and long vertical reflections of both lights in the asphalt
+void cars(vec2 uv, float blur, out vec3 add, out vec3 body, out float mask){
+  add = vec3(0); body = vec3(0); mask = 0.;
+  for(int i=0;i<6;i++){
+    float fi = float(i);
+    bool farLane = mod(fi,2.) < 1.;
+    float dir = farLane ? -1. : 1.;
+    float sc = farLane ? 1.15 : 1.5;
+    float spd = (.035 + .03*hash(vec2(fi,3.1))) * (farLane ? .85 : 1.);
+    float xc = fract(uTime*spd + hash(vec2(fi,7.7)))*1.9 - .45;
+    if(dir < 0.) xc = 1. - xc;
+    float gy = farLane ? .79 : .83;                       // wheel contact line
+    vec2 q = (uv - vec2(xc, gy)) * vec2(uAspect, 1.) / sc;
+    q.x *= dir;                                             // +x = front of the car
+    float hs = hash(vec2(fi, 11.3));
+    float lower = sdBox(q - vec2(0., -.0125), vec2(.036, .0062), .0035);
+    float cabin = sdBox(q - vec2(-.004 + (hs-.5)*.004, -.0215), vec2(.018 - hs*.003, .0048), .0045);
+    float wheels = min(length(q - vec2(.023, -.0055)), length(q - vec2(-.024, -.0055))) - .0052;
+    float d = min(min(lower, cabin), wheels);
+    float e = .0009 + blur*.6;
+    float m = smoothstep(e, -e, d);
+    if(m > .001){
+      vec3 paint = mix(vec3(.05,.052,.06), vec3(.16,.02,.02), step(.6,hs)) ; paint = mix(paint, vec3(.09,.1,.12), step(.85,hs));
+      float lamp = lampAt(uv.x);
+      float top = smoothstep(-.006, -.018, q.y) * (1. - smoothstep(-.018, -.0265, q.y));
+      vec3 bc = paint * (.35 + lamp*.9);
+      bc += vec3(1.,.72,.42) * lamp * .22 * smoothstep(.0015, -.001, abs(lower + .0012)) * step(q.y, -.012);   // roofline / beltline sheen
+      bc += vec3(1.,.72,.42) * lamp * .12 * smoothstep(.0012, -.0005, abs(cabin + .001)) * step(q.y, -.021);
+      float glass = smoothstep(.0008, -.0008, cabin + .0018) * step(q.y, -.0172);
+      bc = mix(bc, vec3(.03,.035,.05) + vec3(.35,.3,.25)*lamp*.25 + vec3(.2,.25,.35)*.12*smoothstep(-.03,-.015,q.y+q.x*.3), glass);
+      bc = mix(bc, vec3(.008), smoothstep(.001, -.001, wheels));
+      bc *= 1. - top*0.;
+      body = mix(body, bc, m); mask = max(mask, m);
+    }
+    float r = .0026 + blur;
+    float fall = pow(.0026/r, 1.1);
+    // headlight + beam on the road ahead
+    vec2 hp = q - vec2(.037, -.0125);
+    add += vec3(1.,.93,.8) * 1.7 * glow(hp, r) * fall;
+    add += vec3(1.,.9,.75) * .35 * exp(-pow(max(hp.x,0.)/.07,2.)) * step(0.,hp.x) * exp(-pow((q.y-.0015)/(.003+blur),2.)) * smoothstep(0.,.01,hp.x);
+    // tail light (brakes now and then)
+    float brake = .55 + .45*step(.8, fract(uTime*.13 + hs*5.));
+    vec2 tp = q - vec2(-.0375, -.0135);
+    add += vec3(1.,.07,.04) * 1.2 * brake * glow(tp*vec2(1.,.8), r) * fall;
+    // wet-road reflections under both lights
+    float below = step(0., q.y);
+    add += vec3(1.,.9,.75) * .28 * exp(-hp.x*hp.x/(r*r*1.5)) * below * exp(-q.y*55./sc) * pow(.0026/r,.8);
+    add += vec3(1.,.08,.04) * .22 * brake * exp(-tp.x*tp.x/(r*r*1.5)) * below * exp(-q.y*55./sc) * pow(.0026/r,.8);
+  }
+}
+
+// rain falling through the street light, three depth layers
+float rainfall(vec2 uv){
+  float s = 0.;
+  for(int i=0;i<3;i++){
+    float fi = float(i), sc = 55. + fi*60.;
+    vec2 p = vec2((uv.x + uv.y*.09)*uAspect*sc, uv.y*sc*.16 - uTime*(2.4 + fi*1.1));
+    vec2 id = floor(p), f = fract(p);
+    float h = hash(id + fi*19.);
+    if(h > .9){
+      float xo = .15 + .7*hash(id + 3.7);
+      s += smoothstep(.06 + fi*.02, 0., abs(f.x - xo)) * smoothstep(0.,.4,f.y) * smoothstep(1.,.55,f.y) * (.3 + fi*.3);
+    }
+  }
+  return s;
+}
+
+vec3 scene(vec2 uv, float fog){
+  vec3 s = texture(uSharp, uv).rgb, m = texture(uMid, uv).rgb, h = texture(uHeavy, uv).rgb;
+  vec3 col = mix(mix(s, m, .62), h, smoothstep(0., .9, fog));
+  vec3 ca, cb; float cm;
+  cars(uv, mix(0., .03, fog), ca, cb, cm);
+  col = mix(col, cb, cm * (1. - fog*.6)) + ca;
+  // lightning lights everything: the sky blazes, buildings and street pick up a cold wash
+  float sky = smoothstep(.72, .1, uv.y);
+  float lumC = dot(col, vec3(.33));
+  col += uFlash * (vec3(.5,.55,.75)*sky*(.55+.45*fbm(uv*3. + uTime*.2)) + vec3(.07,.08,.11) + col*.9 + (1.-sky)*vec3(.05,.06,.08)*(1.-lumC));
+  float lum = dot(m, vec3(.3,.55,.15));
+  col += rainfall(uv) * uRain * (lum*1.7 + .035 + uFlash*.5) * (1. - fog*.9) * vec3(.82,.86,.95);
+  return col;
+}
+
+void main(){
+  vec2 uv = vUv;
+  vec2 a2 = uv*vec2(uAspect,1.);
+
+  // --- condensation (inside) ---
+  float c = texture(uClear, uv).r;
+  float nuc = fbm(a2*7.);                 // re-fogging nucleates in patches
+  float grain = noise(uv*uRes/1.8);       // micro droplet grain
+  float clearV = smoothstep(.06, .72, c*1.15 - (nuc-.5)*.6 - (grain-.5)*.12);
+  float density = clamp(.8 + .28*(fbm(a2*1.6 + 4.)-.5) + .2*smoothstep(.5, 1., uv.y) + .08*smoothstep(.12,.0,min(uv.x,1.-uv.x)), 0., 1.);
+  float fog = (1. - clearV) * density;
+  vec3 hv = texture(uHeavy, uv).rgb;
+  vec3 milk = vec3(.07,.075,.085) + hv*.42 + uFlash*vec3(.16,.17,.21);   // fog scatters the flash
+
+  // --- rain (outside) ---
+  vec4 w = texture(uWater, uv);
+  float cover = smoothstep(.3, .7, w.a);
+  vec2 n = (w.rg - .5) * 2.;
+  float ht = w.b;
+
+  vec3 col = scene(uv, fog);
+  col = mix(col, col*.72 + milk, fog*.88);
+  col += (grain - .5) * .03 * fog;
+
+  if(cover > .001){
+    // a bead is a lens: it shows an inverted miniature of the scene behind it
+    vec2 ruv = clamp(uv - n*vec2(.075/uAspect, .075)*(.6 + ht*.6), .001, .999);
+    vec3 dc = scene(ruv, fog*.85 + .05) * 1.1;
+    float rim = pow(1. - ht, 2.6);
+    dc *= 1. - rim*.82;                                          // dark refractive edge
+    dc += smoothstep(.25, .95, n.y) * ht * (.06 + dot(texture(uMid, uv).rgb, vec3(.33))*.35); // bottom caustic
+    vec3 N = normalize(vec3(n*1.4, max(ht, .04)));
+    float sp = pow(max(dot(N, normalize(vec3(-.35,-.62,.7))), 0.), 70.) * 1.1
+             + pow(max(dot(N, normalize(vec3(.5,-.2,.84))), 0.), 180.) * .35;
+    dc += sp * vec3(1.,.95,.88) * (1. - fog*.75);
+    dc = mix(dc, dc*.72 + milk*1.05, fog*.8);                    // beads are seen through the fog
+    col = mix(col, dc, cover);
+  }
+
+  // faint reflection of the warm room on the glass
+  col += vec3(1.,.78,.5) * .03 * exp(-length((uv - vec2(.12,.16))*vec2(uAspect,1.))*2.6) * (1. - fog*.5);
+  col += vec3(1.,.8,.6) * .012 * smoothstep(.6, 1., uv.y);
+
+  vec2 q = uv - .5; col *= 1. - dot(q*vec2(1.1,1.), q)*.6;
+  col += (hash(uv*uRes + fract(uTime)*91.) - .5) * .014;
+  o = vec4(clamp(col, 0., 1.), 1.);
+}`;
+
+function sh(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+const prog = gl.createProgram();
+gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS)); gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+const loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+const U = {}; for (const n of ['uSharp', 'uMid', 'uHeavy', 'uWater', 'uClear', 'uRes', 'uTime', 'uFlash', 'uAspect', 'uRain']) U[n] = gl.getUniformLocation(prog, n);
+function mkTex(unit) { const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t; }
+const T = { sharp: mkTex(0), mid: mkTex(1), heavy: mkTex(2), water: mkTex(3), clear: mkTex(4) };
+['uSharp', 'uMid', 'uHeavy', 'uWater', 'uClear'].forEach((n, i) => gl.uniform1i(U[n], i));
+gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+function upload(unit, t, src) { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src); }
+
+function resize() {
+  VW = innerWidth; VH = innerHeight; DPR = Math.min(devicePixelRatio || 1, 2);
+  cv.width = Math.round(VW * DPR); cv.height = Math.round(VH * DPR);
+  gl.viewport(0, 0, cv.width, cv.height);
+  WS = Math.min(1.25, 1800 / VW) * Math.min(DPR, 1.25); ww = Math.round(VW * WS); wh = Math.round(VH * WS);
+  const bw = Math.min(Math.round(VW * DPR), 2400), bh = Math.round(bw * VH / VW);
+  const L = makeLayers(bw, bh);
+  upload(0, T.sharp, L.sharp); upload(1, T.mid, L.mid); upload(2, T.heavy, L.heavy);
+  setupSim();
+}
+let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(resize, 200); });
+resize();
+
+// ---------- loop ----------
+let last = performance.now(), time = 0, flash = 0, nextBolt = 4 + R() * 4, bolt = null, tilt = 0, pmx = 0;
+function frame(now) {
+  const dt = Math.min(.05, (now - last) / 1000); last = now; time += dt;
+  const intensity = clamp(.8 + .3 * Math.sin(time * .06) + .18 * Math.sin(time * .21 + 1.3), .45, 1.25);
+  tapBudget = Math.min(tapBudget + dt * 14, 6);
+
+  simulate(dt, intensity);
+  decayClear(dt);
+  renderWater();
+
+  // lightning: mostly faint far-off flickers, sometimes a close strike; thunder lags by distance
+  nextBolt -= dt;
+  if (nextBolt < 0 && !bolt) {
+    const near = R() < .3;
+    nextBolt = near ? 16 + R() * 18 : 6 + R() * 10;
+    const pw = near ? .8 + R() * .4 : .18 + R() * .25;
+    const pulses = []; let pt = 0; const np = 1 + (R() * (near ? 4 : 3) | 0);
+    for (let k = 0; k < np; k++) { pulses.push([pt, pw * (k ? .35 + R() * .6 : 1), .03 + R() * .05]); pt += .06 + R() * .2; }
+    bolt = { t: 0, pulses, end: pt + .6 };
+    thunder(near ? .4 + R() * 1.2 : 2.5 + R() * 3, near ? .55 + R() * .3 : .12 + R() * .15, near);
+  }
+  if (bolt) {
+    bolt.t += dt; flash = 0;
+    for (const [pt, a, wd] of bolt.pulses) { const x = bolt.t - pt; if (x > -.02) flash += a * Math.exp(-x * x / (wd * wd * .5)) + (x > 0 ? a * .12 * Math.exp(-x * 3) : 0); }
+    if (bolt.t > bolt.end) { bolt = null; flash = 0; }
+  }
+
+  if (AC) { rainG.gain.setTargetAtTime(.22 + intensity * .12, AC.currentTime, .5); wipeG.gain.setTargetAtTime(down ? wipeSpeed * .1 : 0, AC.currentTime, .05); }
+  wipeSpeed *= Math.pow(.02, dt);
+
+  upload(3, T.water, water);
+  gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, T.clear);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, gw, gh, 0, gl.RED, gl.UNSIGNED_BYTE, clearU8);
+  if (window.__ff != null) flash = window.__ff;
+  gl.uniform2f(U.uRes, cv.width, cv.height); gl.uniform1f(U.uTime, time); gl.uniform1f(U.uFlash, flash);
+  gl.uniform1f(U.uAspect, VW / VH); gl.uniform1f(U.uRain, intensity);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  cursor.style.transform = `translate3d(${mx}px,${my}px,0)`;
+  tilt += (clamp((mx - pmx) * 1.2, -18, 18) - tilt) * Math.min(1, dt * 10); pmx = mx;
+  cursor.style.setProperty('--tilt', tilt.toFixed(1) + 'deg');
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// hooks for automated checks
+window.__rain = { get drops() { return drops.length; }, get drips() { return drips.length; }, wipe: (x, y) => wipeAt(x, y, 1, 0), clear: () => clearF, strike: () => { nextBolt = 0; } };
+})();
+</script>
+</body>
+</html>
