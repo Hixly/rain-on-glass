@@ -287,6 +287,53 @@ function paintScene(x, w, h, p) {
   x.fillStyle = g; x.fillRect(-p, street, w + 2 * p, h - street + p);
 }
 
+// Safari (all iPhones) ignores ctx.filter, which left the fog layers unblurred and the fog thin.
+// Detect real support by blurring one white pixel; fall back to a matching gaussian done by hand.
+const NATIVE_BLUR = (() => {
+  if (/[?&]softblur\b/.test(location.search)) return false;   // test hook: force the fallback
+  try {
+    const c = document.createElement('canvas'); c.width = c.height = 9;
+    const x = c.getContext('2d'); x.fillStyle = '#000'; x.fillRect(0, 0, 9, 9);
+    const d = document.createElement('canvas'); d.width = d.height = 9;
+    const y = d.getContext('2d'); y.fillStyle = '#fff'; y.fillRect(4, 4, 1, 1);
+    x.filter = 'blur(2px)'; x.drawImage(d, 0, 0);
+    return x.getImageData(2, 4, 1, 1).data[0] > 0;          // light spread 2px sideways = blur works
+  } catch (e) { return false; }
+})();
+
+// Gaussian blur of `src` (padded by p on every side) into ctx, equal to ctx.filter = blur(sigma px).
+// Three box blurs approximate a gaussian (W3C/Kovesi method); big radii run at reduced resolution.
+function softBlur(ctx, src, p, sigma) {
+  const f = Math.max(1, Math.floor(sigma / 4));   // big radii blur at reduced resolution
+  const W = Math.ceil(src.width / f), H = Math.ceil(src.height / f), s = sigma / f;
+  const sm = document.createElement('canvas'); sm.width = W; sm.height = H;
+  const sx = sm.getContext('2d'); sx.imageSmoothingQuality = 'high'; sx.drawImage(src, 0, 0, W, H);
+  const img = sx.getImageData(0, 0, W, H), a = img.data, b = new Uint8ClampedArray(a.length);
+  const wl0 = Math.floor(Math.sqrt(12 * s * s / 3 + 1)), wl = wl0 % 2 ? wl0 : wl0 - 1, wu = wl + 2;
+  const m = Math.round((12 * s * s - 3 * wl * wl - 12 * wl - 9) / (-4 * wl - 4));
+  const box = (from, to, r, horiz) => {          // running-sum box blur, edges clamped
+    const n = horiz ? W : H, lines = horiz ? H : W, step = horiz ? 4 : W * 4, k = 1 / (2 * r + 1);
+    for (let l = 0; l < lines; l++) {
+      const base = horiz ? l * W * 4 : l * 4;
+      for (let ch = 0; ch < 3; ch++) {
+        const o = base + ch, f0 = from[o], fl = from[o + (n - 1) * step];
+        let acc = (r + 1) * f0;
+        for (let j = 0; j < r; j++) acc += j < n ? from[o + j * step] : fl;
+        for (let i = 0; i < n; i++) {
+          const ai = i + r, bi = i - r - 1;
+          acc += (ai < n ? from[o + ai * step] : fl) - (bi >= 0 ? from[o + bi * step] : f0);
+          to[o + i * step] = acc * k;
+        }
+      }
+    }
+  };
+  for (let i = 0; i < 3; i++) { const r = ((i < m ? wl : wu) - 1) / 2; box(a, b, r, true); box(b, a, r, false); }
+  for (let i = 3; i < a.length; i += 4) a[i] = 255;
+  sx.putImageData(img, 0, 0);
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(sm, 0, 0, W, H, -p, -p, W * f, H * f);
+}
+
 let CROP = 1;   // visible fraction of the painted street's width (below 1 on portrait screens)
 function makeLayers(w, h) {
   const p = Math.round(h * .08);
@@ -296,8 +343,10 @@ function makeLayers(w, h) {
   const bx = big.getContext('2d'); bx.translate(p - off, p); paintScene(bx, sw, h, p + off);
   const out = (blur) => {
     const c = document.createElement('canvas'); c.width = w; c.height = h;
-    const x = c.getContext('2d'); if (blur) x.filter = `blur(${blur}px)`;
-    x.drawImage(big, -p, -p); return c;
+    const x = c.getContext('2d');
+    if (!blur) { x.drawImage(big, -p, -p); return c; }
+    if (NATIVE_BLUR) { x.filter = `blur(${blur}px)`; x.drawImage(big, -p, -p); return c; }
+    softBlur(x, big, p, blur); return c;
   };
   const k = h / 1000;
   return { sharp: out(1.1 * k), mid: out(5 * k), heavy: out(34 * k) };
@@ -778,6 +827,25 @@ requestAnimationFrame(frame);
 // hooks for automated checks
 window.__rain = { get drops() { return drops.length; }, get drips() { return drips.length; }, wipe: (x, y) => wipeAt(x, y, 1, 0), clear: () => clearF, strike: () => { nextBolt = 0; },
   // density check: beads per CSS megapixel and share of glass covered by water
+  // blur check: paints the scene, blurs it natively and with softBlur, and diffs the two
+  blurTest: (w = 800, h = 1000) => {
+    const p = Math.round(h * .08), big = document.createElement('canvas'); big.width = w + 2 * p; big.height = h + 2 * p;
+    const bx = big.getContext('2d'); bx.translate(p, p); paintScene(bx, w, h, p);
+    const res = { native: NATIVE_BLUR };
+    for (const sigma of [1.1 * h / 1000, 5 * h / 1000, 34 * h / 1000]) {
+      const n = document.createElement('canvas'); n.width = w; n.height = h; const nx = n.getContext('2d');
+      nx.filter = `blur(${sigma}px)`; nx.drawImage(big, -p, -p);
+      const q = document.createElement('canvas'); q.width = w; q.height = h; const qx = q.getContext('2d');
+      const t0 = performance.now(); softBlur(qx, big, p, sigma); const ms = performance.now() - t0;
+      const A = nx.getImageData(0, 0, w, h).data, B = qx.getImageData(0, 0, w, h).data;
+      let sum = 0, max = 0, la = 0, lb = 0, sa = 0, sb = 0, cnt = 0;
+      for (let i = 0; i < A.length; i += 4) for (let c = 0; c < 3; c++) { const d = Math.abs(A[i + c] - B[i + c]); sum += d; if (d > max) max = d; }
+      for (let i = 0; i < A.length; i += 4) { const ya = A[i] * .3 + A[i + 1] * .55 + A[i + 2] * .15, yb = B[i] * .3 + B[i + 1] * .55 + B[i + 2] * .15; la += ya; lb += yb; sa += ya * ya; sb += yb * yb; cnt++; }
+      la /= cnt; lb /= cnt;
+      res['sigma ' + sigma.toFixed(1)] = { meanAbsDiff: +(sum / (A.length * .75)).toFixed(2), maxDiff: max, meanLum: [+la.toFixed(1), +lb.toFixed(1)], contrast: [+Math.sqrt(sa / cnt - la * la).toFixed(1), +Math.sqrt(sb / cnt - lb * lb).toFixed(1)], ms: Math.round(ms) };
+    }
+    return res;
+  },
   stats: () => { renderWater(); const d = wctx.getImageData(0, 0, ww, wh).data; let c = 0, n = 0;
     for (let i = 3; i < d.length; i += 4 * 7) { n++; if (d[i] > 128) c++; }
     return { dropsPerMP: +(drops.length / (VW * VH / 1e6)).toFixed(1), coverage: +(c / n).toFixed(4), WS: +WS.toFixed(3), VW, VH }; } };

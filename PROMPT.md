@@ -70,6 +70,7 @@ Generate everything from one looping pink noise buffer:
 
 - Handle resize (debounced) by rebuilding the layers and the simulation. Cap the device pixel ratio at 2, and scale drop sizes so they look the same on any screen.
 - Keep the rain density identical on every screen: scale the pre-soak counts, spawn rates and bead cap by the glass area in CSS pixels, never by canvas pixels. A phone must look exactly as foggy as a desktop, not covered in extra beads.
+- Safari (every iPhone) ignores `ctx.filter`, so feature-detect it by blurring a single white pixel and checking that the light spread. When it is missing, build the same gaussian by hand (three box blurs, big radii at reduced resolution), or iPhones will show a sharp city through thin fog.
 - On portrait screens, paint a landscape-width street (at least 1.25 times the height) and show the middle slice, so buildings, lamps and cars keep their real proportions.
 - Support touch through pointer events, with `touch-action: none`.
 - Show a friendly message if WebGL2 is unavailable.
