@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Rain on Glass</title>
 <!--
   Rain on Glass (Opus 5.5 demo)
@@ -24,7 +24,7 @@
 <style>
   :root { --ink: #e8e3da; --frame: #16120e; }
   html, body { margin: 0; height: 100%; background: #040507; overflow: hidden; }
-  body { cursor: none; touch-action: none; user-select: none; -webkit-user-select: none; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+  body { cursor: none; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; overscroll-behavior: none; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
   #gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
 
   /* Window frame: painted wood, bevel, rubber seal, deeper sill at the bottom */
@@ -76,6 +76,13 @@
   @media (max-width: 520px) { .links a span { display: none; } .links a { padding: 0 10px; } }
   .hint { bottom: clamp(44px, 6vw, 80px); left: 0; right: 0; text-align: center; font-size: 15px; opacity: .8; }
   .keys { bottom: clamp(34px, 4.6vw, 64px); right: clamp(26px, 3.2vw, 44px); font-size: 11px; opacity: .4; }
+  @media (pointer: coarse) { .keys { display: none; } }
+  body.touch #cursor { display: none; }
+  @supports (top: env(safe-area-inset-top)) {
+    .links { top: max(clamp(20px, 2.6vw, 34px), calc(env(safe-area-inset-top) + 10px)); }
+    .tag { top: max(clamp(24px, 3vw, 40px), calc(env(safe-area-inset-top) + 16px)); }
+    .hint { bottom: max(clamp(44px, 6vw, 80px), calc(env(safe-area-inset-bottom) + 44px)); }
+  }
   body.clean .hud { opacity: 0 !important; }
   .fail { position: fixed; inset: 0; display: grid; place-items: center; color: var(--ink); font-size: 15px; }
 </style>
@@ -276,10 +283,13 @@ function paintScene(x, w, h, p) {
   x.fillStyle = g; x.fillRect(-p, street, w + 2 * p, h - street + p);
 }
 
+let CROP = 1;   // visible fraction of the painted street's width (below 1 on portrait screens)
 function makeLayers(w, h) {
   const p = Math.round(h * .08);
-  const big = document.createElement('canvas'); big.width = w + 2 * p; big.height = h + 2 * p;
-  const bx = big.getContext('2d'); bx.translate(p, p); paintScene(bx, w, h, p);
+  const sw = Math.max(w, Math.round(h * 1.25)), off = Math.round((sw - w) / 2);
+  CROP = w / sw;
+  const big = document.createElement('canvas'); big.width = sw + 2 * p; big.height = h + 2 * p;
+  const bx = big.getContext('2d'); bx.translate(p - off, p); paintScene(bx, sw, h, p + off);
   const out = (blur) => {
     const c = document.createElement('canvas'); c.width = w; c.height = h;
     const x = c.getContext('2d'); if (blur) x.filter = `blur(${blur}px)`;
@@ -442,21 +452,28 @@ function decayClear(dt) {
 // ---------- pointer / wiping ----------
 const cursor = document.getElementById('cursor'), hint = document.getElementById('hint');
 let mx = -100, my = -100, down = false, lx = 0, ly = 0, wipedOnce = false, wipeSpeed = 0;
+const px = e => e.clientX * VW / innerWidth;
+const py = e => e.clientY * VH / innerHeight;
+const pointerKind = e => document.body.classList.toggle('touch', e.pointerType === 'touch');
 addEventListener('pointermove', e => {
+  pointerKind(e);
   mx = e.clientX; my = e.clientY; document.body.classList.remove('away');
   if (!down) return;
-  const dx = mx - lx, dy = my - ly, len = Math.hypot(dx, dy);
+  const nx = px(e), ny = py(e);
+  const dx = nx - lx, dy = ny - ly, len = Math.hypot(dx, dy);
   if (len < .5) return;
   const ux = dx / len, uy = dy / len, step = BRUSH * .22;
   for (let t = step; t <= len; t += step) wipeAt(lx + ux * t, ly + uy * t, ux, uy);
   wipeSpeed = Math.min(1, wipeSpeed + len / 180);
-  lx = mx; ly = my;
+  lx = nx; ly = ny;
 });
+addEventListener('pointerover', pointerKind);
 addEventListener('pointerdown', e => {
   if (e.target.closest('.links')) return;   // clicking a link should not start a wipe
   initAudio(); down = true; document.body.classList.add('down');
-  mx = lx = e.clientX; my = ly = e.clientY; stripe = R() * 6.28;
-  wipeAt(mx, my, 1, 0);
+  pointerKind(e);
+  mx = e.clientX; my = e.clientY; lx = px(e); ly = py(e); stripe = R() * 6.28;
+  wipeAt(lx, ly, 1, 0);
   if (!wipedOnce) { wipedOnce = true; setTimeout(() => hint.style.opacity = 0, 600); }
 });
 const up = () => { down = false; document.body.classList.remove('down'); };
@@ -529,7 +546,7 @@ const FS = `#version 300 es
 precision highp float;
 in vec2 vUv; out vec4 o;
 uniform sampler2D uSharp, uMid, uHeavy, uWater, uClear;
-uniform vec2 uRes; uniform float uTime, uFlash, uAspect, uRain;
+uniform vec2 uRes; uniform float uTime, uFlash, uAspect, uRain, uCrop;
 
 float hash(vec2 p){ p = fract(p*vec2(123.34,456.21)); p += dot(p, p+45.32); return fract(p.x*p.y); }
 float noise(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);
@@ -566,7 +583,7 @@ void cars(vec2 uv, float blur, out vec3 add, out vec3 body, out float mask){
     float m = smoothstep(e, -e, d);
     if(m > .001){
       vec3 paint = mix(vec3(.05,.052,.06), vec3(.16,.02,.02), step(.6,hs)) ; paint = mix(paint, vec3(.09,.1,.12), step(.85,hs));
-      float lamp = lampAt(uv.x);
+      float lamp = lampAt((uv.x - .5) * uCrop + .5);
       float top = smoothstep(-.006, -.018, q.y) * (1. - smoothstep(-.018, -.0265, q.y));
       vec3 bc = paint * (.35 + lamp*.9);
       bc += vec3(1.,.72,.42) * lamp * .22 * smoothstep(.0015, -.001, abs(lower + .0012)) * step(q.y, -.012);   // roofline / beltline sheen
@@ -681,7 +698,7 @@ gl.useProgram(prog);
 const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb);
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
 const loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-const U = {}; for (const n of ['uSharp', 'uMid', 'uHeavy', 'uWater', 'uClear', 'uRes', 'uTime', 'uFlash', 'uAspect', 'uRain']) U[n] = gl.getUniformLocation(prog, n);
+const U = {}; for (const n of ['uSharp', 'uMid', 'uHeavy', 'uWater', 'uClear', 'uRes', 'uTime', 'uFlash', 'uAspect', 'uRain', 'uCrop']) U[n] = gl.getUniformLocation(prog, n);
 function mkTex(unit) { const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return t; }
@@ -692,7 +709,7 @@ gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
 function upload(unit, t, src) { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src); }
 
 function resize() {
-  VW = innerWidth; VH = innerHeight; DPR = Math.min(devicePixelRatio || 1, 2);
+  VW = innerWidth; VH = innerHeight; DPR = Math.min(devicePixelRatio || 1, matchMedia('(pointer: coarse)').matches ? 1.5 : 2);
   cv.width = Math.round(VW * DPR); cv.height = Math.round(VH * DPR);
   gl.viewport(0, 0, cv.width, cv.height);
   WS = Math.min(1.25, 1800 / VW) * Math.min(DPR, 1.25); ww = Math.round(VW * WS); wh = Math.round(VH * WS);
@@ -701,7 +718,11 @@ function resize() {
   upload(0, T.sharp, L.sharp); upload(1, T.mid, L.mid); upload(2, T.heavy, L.heavy);
   setupSim();
 }
-let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(resize, 200); });
+let rt; addEventListener('resize', () => {
+  clearTimeout(rt);
+  rt = setTimeout(() => { if (innerWidth === VW && Math.abs(innerHeight - VH) < VH * .3) return; resize(); }, 200);
+});
+if (matchMedia('(pointer: coarse)').matches) hint.textContent = 'Touch and drag to wipe the glass';
 resize();
 
 // ---------- loop ----------
@@ -740,7 +761,7 @@ function frame(now) {
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, gw, gh, 0, gl.RED, gl.UNSIGNED_BYTE, clearU8);
   if (window.__ff != null) flash = window.__ff;
   gl.uniform2f(U.uRes, cv.width, cv.height); gl.uniform1f(U.uTime, time); gl.uniform1f(U.uFlash, flash);
-  gl.uniform1f(U.uAspect, VW / VH); gl.uniform1f(U.uRain, intensity);
+  gl.uniform1f(U.uAspect, VW / VH); gl.uniform1f(U.uRain, intensity); gl.uniform1f(U.uCrop, CROP);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   cursor.style.transform = `translate3d(${mx}px,${my}px,0)`;
