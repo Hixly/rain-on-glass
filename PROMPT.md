@@ -69,6 +69,8 @@ Generate everything from one looping pink noise buffer:
 ## Quality bar
 
 - Handle resize (debounced) by rebuilding the layers and the simulation. Cap the device pixel ratio at 2, and scale drop sizes so they look the same on any screen.
+- Keep the rain density identical on every screen: scale the pre-soak counts, spawn rates and bead cap by the glass area in CSS pixels, never by canvas pixels. A phone must look exactly as foggy as a desktop, not covered in extra beads.
+- On portrait screens, paint a landscape-width street (at least 1.25 times the height) and show the middle slice, so buildings, lamps and cars keep their real proportions.
 - Support touch through pointer events, with `touch-action: none`.
 - Show a friendly message if WebGL2 is unavailable.
 - Before calling it done, open it in a real browser, wipe, wait for the fog to return, watch a lightning flash, and look closely at the drops, the cars and the fog edges. Fix anything that reads as fake: hard edges, stripes, banding, dotted trails, floating lights with no car attached.
